@@ -1,8 +1,7 @@
 import ActivityPatterns as ap
 import numpy as np
-import h5py
 import scipy.linalg as linalg
-import matplotlib.pyplot as plt
+import scipy.stats as stats
 import bspline
 
 def semiparamRegression(S, X, B, P):
@@ -54,7 +53,7 @@ def semiparamRegression(S, X, B, P):
 
     return Z_minAIC
 
-def semiparamRegressio_VCM(S, T, B, P):
+def semiparamRegressio_VCM(S, T, B, P, pCrit = 0.05, lambdas = [1]):
     """Apply semiparametric regression framework with varying coefficient model to imaging data.
     S: m x n data cube with m time series of length n
     T: length n vector of timestamps
@@ -64,6 +63,10 @@ def semiparamRegressio_VCM(S, T, B, P):
     [noTimepoints, noPixels] = S.shape
     m = np.mean(S,axis=0)
     S2 = S - m
+
+    if(pCrit >= 0.001):
+        print('[INFO] Bonferroni correction of p')
+        pCrit = pCrit / noPixels
 
     """
     Build VCM basis
@@ -98,20 +101,19 @@ def semiparamRegressio_VCM(S, T, B, P):
     fit model
     """
     # compute Penalty term
-    #E1 = 0 * np.eye(noFixedEffects)
+    #E1 = 0 * np.eye(int(noFixedEffects/2))
     E1 = np.diff(np.eye(int(noFixedEffects / 2))).transpose()
     S_P = linalg.block_diag(E1,E1,P)
     Pterm = S_P.transpose().dot(S_P)
     # allocate intermediate storage
-    lambdas= np.linspace(0.1,10,10)
-    lambdas = [1]
     GtG = G.transpose().dot(G)
     GtGwoFE = GwithoutFixedEffects.transpose().dot(GwithoutFixedEffects)
     AIC = np.zeros([len(lambdas),noPixels])
     F = np.zeros([len(lambdas),noPixels])
+    Fcrit = np.zeros([len(lambdas)])
     for i in range(0,len(lambdas)):
         """
-        fixed effects
+        fixed effects (full model)
         """
         lambda_i = lambdas[i]
         GtGpD = GtG + lambda_i * Pterm;
@@ -124,7 +126,7 @@ def semiparamRegressio_VCM(S, T, B, P):
         df = np.trace(GTGpDsG.dot(G));
 
         """
-        without fixed effects
+        without fixed effects (reduced model)
         """
         GtGpD = GtGwoFE + lambda_i * P;
         GTGpDsG = linalg.solve(GtGpD,GwithoutFixedEffects.transpose())
@@ -132,20 +134,21 @@ def semiparamRegressio_VCM(S, T, B, P):
         seqF = GwithoutFixedEffects.dot(beta)
         eGlobal = S2 - seqF
         RSS_woFE = np.sum(eGlobal ** 2, axis=0)
-        df_woFE = df - np.trace(GTGpDsG.dot(G));
+        df_woFE = df - np.trace(GTGpDsG.dot(GwithoutFixedEffects));
 
         """
-        AICc, F-value computation
+        Model evaluation by extra sum of squars F-test
+        AICc, F-value, Fcrit computation
         """
-
         F_i = ((RSS_woFE - RSS) / df_woFE)  /    (RSS / (noTimepoints - df))
         F[i,] = F_i
-
         AIC_i = np.log(RSS) + (2 * (df+1)) / (noTimepoints-df-2)
         AIC[i,] = AIC_i
+        Fcrit[i] = stats.f.ppf(1-pCrit,df_woFE,noTimepoints - df)
+        print('Fcrit(Lambda='+str(lambda_i)+'): ' + str(Fcrit[i]) + '\n')
 
     minAICcIdx = np.argmin(AIC,axis=0)
     F = F.transpose()
     F_minAIC = F[np.arange(F.shape[0]), minAICcIdx]
 
-    return F_minAIC
+    return F_minAIC, Fcrit

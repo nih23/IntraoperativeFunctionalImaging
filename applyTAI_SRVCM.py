@@ -24,7 +24,7 @@ val_neg,vp = val.nonzero()
 
 X = ap.computeGaussianActivityPattern(np.squeeze(T2)).transpose();
 start_time = time.time()
-F = tai.semiparamRegressio_VCM(S2,T2,B,P);
+F,Fcrit = tai.semiparamRegressio_VCM(S2,T2,B,P);
 elapsed_time = time.time() - start_time
 print('elapsed (CPU): ' + str(elapsed_time) + ' s')
 plt.imshow(np.reshape(F,[640, 480]));plt.show()
