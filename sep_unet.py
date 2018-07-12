@@ -25,8 +25,46 @@ def normalizeData(smpls):
 
    return smpls
 
+def get_msd(noTimepoints=1024,depth=5,features=64,activation_function=PReLU(),lr=1e-4,noGPUs=4,decayrate=0,pDropout=0.25,subsampleData=False):
+    layersEncoding = []
+    inputs = Input((noTimepoints, 1))
+    layers = [inputs]
+
+    # DOWNSAMPLING STREAM
+    for i in range(1,depth+1):
+        layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal', dilation_rate = i)(inputs))
+        layers.append(BatchNormalization()(layers[-1]))
+        layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
+        layers.append(activation_function(layers[-1]))
+        layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal', dilation_rate = i)(layers[-1]))
+        layers.append(BatchNormalization()(layers[-1]))
+        layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
+        layers.append(activation_function(layers[-1]))
+        layersEncoding.append(layers[-1])
+
+    layers.append(concatenate(layersEncoding))
+
+    # ENCODING LAYER
+    layers.append(Conv1D(features, kernelSz, padding='same')(layers[-1]))
+    #layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
+    layers.append(activation_function(layers[-1]))
+    layers.append(Conv1D(features, kernelSz, padding='same')(layers[-1]))
+    #layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
+    layers.append(activation_function(layers[-1]))
+
+    layers.append(Conv1D(1,1,activation='linear', padding='same')(layers[-1]))
+    o1 = layers[-1]
+    layers.append(Flatten()(layers[-1]))
+    layers.append(Dense(1,activation='sigmoid')(layers[-1]))
+    o2 = layers[-1]
+    optimizer = optimizers.Adam(lr=lr, decay=decayrate)
+    u_net = Model(layers[0], outputs=[o1,o2])
+    u_net.compile(loss=[losses.mean_absolute_error,losses.binary_crossentropy],metrics={'dense_1':'accuracy'}, optimizer=optimizer)
+    return u_net
+
 
 def get_unet(noTimepoints=1024,depth=5,features=64,activation_function=PReLU(),lr=1e-4,noGPUs=4,decayrate=0,pDropout=0.25,subsampleData=False):
+    layersEncoding = []
     inputs = Input((noTimepoints, 1))
     layers = [inputs]
     if(subsampleData):
@@ -42,27 +80,28 @@ def get_unet(noTimepoints=1024,depth=5,features=64,activation_function=PReLU(),l
         layers.append(BatchNormalization()(layers[-1]))
         layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
         layers.append(activation_function(layers[-1]))
+        layersEncoding.append(layers[-1])
         layers.append(MaxPooling1D(pool_size=(2))(layers[-1]))
 
     # ENCODING LAYER
     layers.append(Conv1D(features, kernelSz, padding='same')(layers[-1]))
-    layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
+    #layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
     layers.append(activation_function(layers[-1]))
     layers.append(Conv1D(features, kernelSz, padding='same')(layers[-1]))
-    layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
+    #layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
     layers.append(activation_function(layers[-1]))
 
     # UPSAMPLING STREAM
     for i in range(1,depth+1):
         j = depth+1 - i
-        layers.append(concatenate([UpSampling1D()(layers[-1]), layers[-9*(i-1)*2  -  9 ]]))
+        layers.append(concatenate([UpSampling1D()(layers[-1]), layersEncoding[-i] ]))
         layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal')(layers[-1]))
         layers.append(BatchNormalization()(layers[-1]))
-        layers.append(SelectiveDropout(0.5)(layers[-1]))
+        #layers.append(SelectiveDropout(0.5)(layers[-1]))
         layers.append(activation_function(layers[-1]))
         layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal')(layers[-1]))
         layers.append(BatchNormalization()(layers[-1]))
-        layers.append(SelectiveDropout(0.5)(layers[-1]))
+        #layers.append(SelectiveDropout(0.5)(layers[-1]))
         layers.append(activation_function(layers[-1]))
 
     if(subsampleData):
@@ -116,7 +155,7 @@ def applyModel(pDataset, pModel):
     d2 = f.create_dataset('samples_pred',data=samples_pred)
 
 
-def fit(pData,depth=1,epochs=100,lr=1e-4,model=None,noFeatures=32,activation="sigmoid"):
+def fit(pData,depth=1,epochs=100,lr=1e-4,model=None,noFeatures=32,activation="sigmoid",batch_size=2**12):
   pModel = "sep_unet_doInTraining_"+str(activation)+"_avPool2_d"+str(depth)+"_f"+str(noFeatures)+"_lr"+str(lr)+"_{epoch:02d}-{val_loss:.6f}.h5"
 
   print('*** PROCESSING ' + pData + ' with new U-Net compression architecture')
@@ -149,10 +188,10 @@ def fit(pData,depth=1,epochs=100,lr=1e-4,model=None,noFeatures=32,activation="si
                
     unet = get_unet(noTimepoints=lengthDatapoint,depth=depth,features=noFeatures,noGPUs=1,decayrate=decay_rate,lr=lr,activation_function=act,subsampleData=True)
     
-  unet.summary()
+  #unet.summary()
   checkpoint = ModelCheckpoint(pModel, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
   callbacks_list=[]
-  unet.fit(samples_train, [tau_train,labels_train], batch_size=batchSz, epochs=epochs, validation_data=(samples_test, [tau_test, labels_test]),
+  unet.fit(samples_train, [tau_train,labels_train], batch_size=batch_size, epochs=epochs, validation_data=(samples_test, [tau_test, labels_test]),
             verbose=2, callbacks=callbacks_list)
   
   return unet

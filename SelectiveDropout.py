@@ -21,31 +21,19 @@ class SelectiveDropout(Layer):
         self.noise_shape = noise_shape
         self.seed = seed
         self.supports_masking = True
-        self.setDropoutEnabled(int(dropoutEnabled))
-        #self.dropoutEnabled = self._getDropoutEnabled()
-        assignment = tf.assign(self.dropoutEnabled, [int(dropoutEnabled)])
+        #print("DE@init: " + str(dropoutEnabled))
+        self.tf_dropoutEnabled = tf.Variable([dropoutEnabled], name="dropout_enabled")
         tf.global_variables_initializer().run(session=K.get_session())
-        K.get_session().run(assignment)
+        K.get_session().run(self.tf_dropoutEnabled)
 
 
     def _getDropoutEnabled(self):
-      with tf.variable_scope("model", reuse=tf.AUTO_REUSE):
-        v = tf.get_variable("dropoutEnabled",shape=[1],dtype=tf.int32)
-      return v
-#     # workaround for old tensorflow versions that dont know AUTO_REUSE
-#      try:
-#         with tf.variable_scope("model"):
-#            v = tf.get_variable("dropoutEnabled",shape=[1],dtype=tf.int32)
-#      except ValueError:
-#         with tf.variable_scope("model", reuse=True):
-#            v = tf.get_variable("dropoutEnabled",shape=[1],dtype=tf.int32)
-#      return v
+        return self.tf_dropoutEnabled.eval(session=K.get_session())
 
 
     def setDropoutEnabled(self, enabled):
-        self.dropoutEnabled = self._getDropoutEnabled()
-        assignment = tf.assign(self.dropoutEnabled, [int(enabled)])
-        K.get_session().run(assignment)
+        print('Warning: changes to the dropout status are effective solely after the first prediction of the network or after saving and re-loading the network!')
+        self.tf_dropoutEnabled = tf.assign(self.tf_dropoutEnabled, [int(enabled)])
 
 
     def _get_noise_shape(self, inputs):
@@ -63,8 +51,9 @@ class SelectiveDropout(Layer):
             def dropped_inputs():
                 return K.dropout(inputs, self.rate, noise_shape,
                                  seed=self.seed)
-            #return tf.cond(tf.squeeze(self._getDropoutEnabled()) < tf.constant(1), lambda: inputs, lambda: dropped_inputs())
-            return tf.cond(tf.squeeze(self._getDropoutEnabled()) < tf.constant(1), lambda: dropped_inputs(), lambda: dropped_inputs())
+            result = tf.cond(tf.squeeze(self.tf_dropoutEnabled) < tf.constant(1), lambda: inputs, lambda: dropped_inputs())
+            return result
+            #DEBUG: check if dropout is activated return tf.cast(self.tf_dropoutEnabled, tf.float32) * inputs
 
         return inputs
 
@@ -72,7 +61,7 @@ class SelectiveDropout(Layer):
         config = {'rate': self.rate,
                   'noise_shape': self.noise_shape,
                   'seed': self.seed,
-                  'dropoutEnabled': int(self.dropoutEnabled.eval(session=K.get_session()))
+                  'dropoutEnabled': int(self.tf_dropoutEnabled.eval(session=K.get_session()))
                   }
         base_config = super(SelectiveDropout, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
