@@ -25,18 +25,21 @@ def normalizeData(smpls):
 
    return smpls
 
-def get_msd(noTimepoints=1024,depth=5,features=64,activation_function=PReLU(),lr=1e-4,noGPUs=4,decayrate=0,pDropout=0.25,subsampleData=False):
+def get_msd(noTimepoints=1024,depth=5,features=64,activation_function=PReLU(),lr=1e-4,noGPUs=4,decayrate=0,pDropout=0.25,subsampleData=False, initialDilationOffset = 0):
     layersEncoding = []
     inputs = Input((noTimepoints, 1))
     layers = [inputs]
-
+    if(subsampleData):
+        layers.append(AveragePooling1D(pool_size=8)(layers[-1]))
+    inLayer = layers[-1]
+    
     # DOWNSAMPLING STREAM
     for i in range(1,depth+1):
-        layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal', dilation_rate = i)(inputs))
+        layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal', dilation_rate = i+initialDilationOffset)(inLayer))
         layers.append(BatchNormalization()(layers[-1]))
         layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
         layers.append(activation_function(layers[-1]))
-        layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal', dilation_rate = i)(layers[-1]))
+        layers.append(Conv1D(features, kernelSz, padding='same', kernel_initializer = 'he_normal', dilation_rate = i+initialDilationOffset)(layers[-1]))
         layers.append(BatchNormalization()(layers[-1]))
         layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
         layers.append(activation_function(layers[-1]))
@@ -44,6 +47,9 @@ def get_msd(noTimepoints=1024,depth=5,features=64,activation_function=PReLU(),lr
 
     layers.append(concatenate(layersEncoding))
 
+    if(subsampleData):
+        layers.append(UpSampling1D(size=8)(layers[-1]))
+    
     # ENCODING LAYER
     layers.append(Conv1D(features, kernelSz, padding='same')(layers[-1]))
     #layers.append(SelectiveDropout(0.5,dropoutEnabled=1)(layers[-1]))
@@ -55,11 +61,11 @@ def get_msd(noTimepoints=1024,depth=5,features=64,activation_function=PReLU(),lr
     layers.append(Conv1D(1,1,activation='linear', padding='same')(layers[-1]))
     o1 = layers[-1]
     layers.append(Flatten()(layers[-1]))
-    layers.append(Dense(1,activation='sigmoid')(layers[-1]))
+    layers.append(Dense(1,activation='sigmoid',name='main_output')(layers[-1]))
     o2 = layers[-1]
     optimizer = optimizers.Adam(lr=lr, decay=decayrate)
     u_net = Model(layers[0], outputs=[o1,o2])
-    u_net.compile(loss=[losses.mean_absolute_error,losses.binary_crossentropy],metrics={'dense_1':'accuracy'}, optimizer=optimizer)
+    u_net.compile(loss=[losses.mean_absolute_error,losses.binary_crossentropy],metrics={'main_output':'accuracy'}, optimizer=optimizer)
     return u_net
 
 
@@ -155,11 +161,12 @@ def applyModel(pDataset, pModel):
     d2 = f.create_dataset('samples_pred',data=samples_pred)
 
 
-def fit(pData,depth=1,epochs=100,lr=1e-4,model=None,noFeatures=32,activation="sigmoid",batch_size=2**12):
-  pModel = "sep_unet_doInTraining_"+str(activation)+"_avPool2_d"+str(depth)+"_f"+str(noFeatures)+"_lr"+str(lr)+"_{epoch:02d}-{val_loss:.6f}.h5"
+def fit(pData,depth=1,epochs=100,lr=1e-4,model=None,noFeatures=32,activation="sigmoid",batch_size=2**12,subsampleData=True, initialDilationOffset = 0,modelSelection = 'msd'):
+  pModel = "sep_" + modelSelection + "_" +str(activation)+"_d"+str(depth)+"_f"+str(noFeatures)+"_lr"+str(lr) + ".h5"
+#  pModel = "sep_" + modelSelection + "_" +str(activation)+"_d"+str(depth)+"_f"+str(noFeatures)+"_lr"+str(lr)+"_{epoch:02d}-{main_output_acc:.6f}.h5"
 
   print('*** PROCESSING ' + pData + ' with new U-Net compression architecture')
-  print('*** U-Net Depth: ' + str(depth) + ' Features ' + str(noFeatures))
+  print('*** ' + modelSelection + ' Depth: ' + str(depth) + ' Features ' + str(noFeatures))
   print('*** Checkpointing model to ' + pModel)
 
   f = h5py.File(pData, "r")
@@ -185,14 +192,19 @@ def fit(pData,depth=1,epochs=100,lr=1e-4,model=None,noFeatures=32,activation="si
         act = ELU(alpha=1.0)
     elif activation == 'sigmoid':
         act = Activation('sigmoid')
-               
-    unet = get_unet(noTimepoints=lengthDatapoint,depth=depth,features=noFeatures,noGPUs=1,decayrate=decay_rate,lr=lr,activation_function=act,subsampleData=True)
-    
-  #unet.summary()
-  checkpoint = ModelCheckpoint(pModel, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
-  callbacks_list=[]
+        
+    if modelSelection == 'msd':
+        print('** msd model')
+        unet = get_msd(noTimepoints=lengthDatapoint,depth=depth,features=noFeatures,noGPUs=1,decayrate=decay_rate,lr=lr,activation_function=act,subsampleData=subsampleData,initialDilationOffset=initialDilationOffset)
+    else:
+        print('** unet model')
+        unet = get_unet(noTimepoints=lengthDatapoint,depth=depth,features=noFeatures,noGPUs=1,decayrate=decay_rate,lr=lr,activation_function=act,subsampleData=subsampleData)
+        
+  csv_logger = CSVLogger("sep_" + modelSelection + "_" +str(activation)+"_d"+str(depth)+"_f"+str(noFeatures)+"_lr"+str(lr)+"_log.csv")
+  checkpoint = ModelCheckpoint(pModel, monitor='main_output_acc', verbose=1, save_best_only=True, mode='max')
+  callbacks_list=[checkpoint, csv_logger]
   unet.fit(samples_train, [tau_train,labels_train], batch_size=batch_size, epochs=epochs, validation_data=(samples_test, [tau_test, labels_test]),
-            verbose=2, callbacks=callbacks_list)
+            verbose=0, callbacks=callbacks_list)
   
   return unet
 
